@@ -1,0 +1,90 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:  # manual trigger from Actions tab
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node / pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install JS dependencies
+        run: pnpm install
+
+      - name: Install xcodegen
+        run: brew install xcodegen swiftformat swiftlint
+
+      - name: Write LocalSigning.xcconfig (personal team override)
+        working-directory: apps/ios
+        run: |
+          cat > LocalSigning.xcconfig << 'EOF'
+          OPENCLAW_CODE_SIGN_STYLE = Manual
+          OPENCLAW_DEVELOPMENT_TEAM =
+          OPENCLAW_APP_BUNDLE_ID = ai.openclaw.ios.unsigned
+          OPENCLAW_SHARE_BUNDLE_ID = ai.openclaw.ios.unsigned.share
+          OPENCLAW_WATCH_APP_BUNDLE_ID = ai.openclaw.ios.unsigned.watchkitapp
+          OPENCLAW_WATCH_EXTENSION_BUNDLE_ID = ai.openclaw.ios.unsigned.watchkitapp.extension
+          OPENCLAW_ACTIVITY_WIDGET_BUNDLE_ID = ai.openclaw.ios.unsigned.widget
+          OPENCLAW_APP_PROFILE =
+          OPENCLAW_SHARE_PROFILE =
+          EOF
+
+      - name: Strip push entitlement (free team cannot sign aps-environment)
+        working-directory: apps/ios
+        run: |
+          cat > Sources/OpenClaw.entitlements << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict/>
+          </plist>
+          EOF
+
+      - name: Generate Xcode project
+        working-directory: apps/ios
+        run: xcodegen generate
+
+      - name: Build (unsigned)
+        working-directory: apps/ios
+        run: |
+          xcodebuild \
+            -project OpenClaw.xcodeproj \
+            -scheme OpenClaw \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Package into IPA
+        working-directory: apps/ios
+        run: |
+          APP_PATH=$(find build/DerivedData -name "OpenClaw.app" -not -path "*/Test*" | head -1)
+          echo "Found app at: $APP_PATH"
+          mkdir -p build/IPA/Payload
+          cp -r "$APP_PATH" build/IPA/Payload/OpenClaw.app
+          cd build/IPA
+          zip -r ../OpenClaw.ipa Payload
+          echo "IPA created at build/OpenClaw.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenClaw-unsigned
+          path: apps/ios/build/OpenClaw.ipa
+          retention-days: 7

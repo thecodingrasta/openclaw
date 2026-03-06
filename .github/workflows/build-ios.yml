@@ -1,7 +1,7 @@
 name: Build iOS IPA
 
 on:
-  workflow_dispatch:  # manual trigger from Actions tab
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,6 +11,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Switch to Xcode 26 — required for swift-tools-version 6.2
+      - name: Select Xcode 26
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Verify Swift version
+        run: swift --version
+
       - name: Install Node / pnpm
         uses: actions/setup-node@v4
         with:
@@ -19,13 +26,15 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm
 
+      # --ignore-scripts skips postinstall/build steps that cause TS errors
+      # in unrelated JS packages in this monorepo
       - name: Install JS dependencies
-        run: pnpm install
+        run: pnpm install --ignore-scripts
 
-      - name: Install xcodegen
+      - name: Install xcodegen, swiftformat, swiftlint
         run: brew install xcodegen swiftformat swiftlint
 
-      - name: Write LocalSigning.xcconfig (personal team override)
+      - name: Write LocalSigning.xcconfig (unsigned build override)
         working-directory: apps/ios
         run: |
           cat > LocalSigning.xcconfig << 'EOF'
@@ -40,7 +49,7 @@ jobs:
           OPENCLAW_SHARE_PROFILE =
           EOF
 
-      - name: Strip push entitlement (free team cannot sign aps-environment)
+      - name: Strip push entitlement (free Apple ID cannot sign aps-environment)
         working-directory: apps/ios
         run: |
           cat > Sources/OpenClaw.entitlements << 'EOF'
@@ -80,7 +89,7 @@ jobs:
           cp -r "$APP_PATH" build/IPA/Payload/OpenClaw.app
           cd build/IPA
           zip -r ../OpenClaw.ipa Payload
-          echo "IPA created at build/OpenClaw.ipa"
+          echo "IPA size: $(du -sh ../OpenClaw.ipa)"
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4

@@ -11,7 +11,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Switch to Xcode 26 — required for swift-tools-version 6.2
       - name: Select Xcode 26
         run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
 
@@ -26,15 +25,13 @@ jobs:
       - name: Install pnpm
         run: npm install -g pnpm
 
-      # --ignore-scripts skips postinstall/build steps that cause TS errors
-      # in unrelated JS packages in this monorepo
       - name: Install JS dependencies
         run: pnpm install --ignore-scripts
 
-      - name: Install xcodegen, swiftformat, swiftlint
-        run: brew install xcodegen swiftformat swiftlint
+      - name: Install xcodegen
+        run: brew install xcodegen
 
-      - name: Write LocalSigning.xcconfig (unsigned build override)
+      - name: Write LocalSigning.xcconfig
         working-directory: apps/ios
         run: |
           cat > LocalSigning.xcconfig << 'EOF'
@@ -49,7 +46,7 @@ jobs:
           OPENCLAW_SHARE_PROFILE =
           EOF
 
-      - name: Strip push entitlement (free Apple ID cannot sign aps-environment)
+      - name: Strip push entitlement
         working-directory: apps/ios
         run: |
           cat > Sources/OpenClaw.entitlements << 'EOF'
@@ -60,11 +57,46 @@ jobs:
           </plist>
           EOF
 
+      - name: Patch GatewaySettingsStore Swift 6 concurrency error
+        working-directory: apps/ios
+        run: |
+          sed -i '' \
+            's/    private static let isoFormatter: ISO8601DateFormatter = {/    nonisolated(unsafe) private static let isoFormatter: ISO8601DateFormatter = {/' \
+            Sources/Gateway/GatewaySettingsStore.swift
+
+      - name: Strip Share extension and Activity Widget from project.yml only
+        working-directory: apps/ios
+        run: |
+          python3 - << 'PYEOF'
+          import re
+
+          with open("project.yml", "r") as f:
+              content = f.read()
+
+          # Remove only Share extension and Activity Widget from main app deps
+          # Keep Watch app dependency intact
+          content = re.sub(
+              r'\s*- target: OpenClawShareExtension\s*\n\s*embed: true\n',
+              '\n',
+              content
+          )
+          content = re.sub(
+              r'\s*- target: OpenClawActivityWidget\s*\n\s*embed: true\n',
+              '\n',
+              content
+          )
+
+          with open("project.yml", "w") as f:
+              f.write(content)
+
+          print("project.yml patched — Share extension and Activity Widget removed, Watch kept")
+          PYEOF
+
       - name: Generate Xcode project
         working-directory: apps/ios
         run: xcodegen generate
 
-      - name: Build (unsigned)
+      - name: Build (unsigned, Watch included)
         working-directory: apps/ios
         run: |
           xcodebuild \
@@ -84,12 +116,25 @@ jobs:
         working-directory: apps/ios
         run: |
           APP_PATH=$(find build/DerivedData -name "OpenClaw.app" -not -path "*/Test*" | head -1)
-          echo "Found app at: $APP_PATH"
+          echo "Found: $APP_PATH"
+
+          file "$APP_PATH/OpenClaw"
+          lipo -info "$APP_PATH/OpenClaw"
+
+          # Remove Share extension and Activity Widget plugin bundles only
+          # Leave Watch directory alone
+          rm -rf "$APP_PATH/PlugIns/OpenClawShareExtension.appex" 2>/dev/null || true
+          rm -rf "$APP_PATH/PlugIns/OpenClawActivityWidget.appex" 2>/dev/null || true
+          # Remove PlugIns dir entirely if now empty
+          rmdir "$APP_PATH/PlugIns" 2>/dev/null || true
+
           mkdir -p build/IPA/Payload
           cp -r "$APP_PATH" build/IPA/Payload/OpenClaw.app
           cd build/IPA
           zip -r ../OpenClaw.ipa Payload
           echo "IPA size: $(du -sh ../OpenClaw.ipa)"
+          echo "IPA contents:"
+          unzip -l ../OpenClaw.ipa | grep -E "\.app|\.appex|Watch" | head -20
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
